@@ -6,6 +6,7 @@ import {
   resolveImageUrl,
   resolveGalleryUrls,
 } from "../lib/payload";
+import { findFallbackOffer } from "../lib/fallback-content";
 
 export interface HotelData {
   id: string;
@@ -93,6 +94,7 @@ export interface OfferDetailData {
   badge?: string;
   badgeVariant?: string;
   status?: string;
+  showOnHomepage?: boolean;
   inclusions?: Array<{ item: string; icon?: string }>;
   exclusions?: Array<{ item: string }>;
   program?: Array<{
@@ -167,12 +169,17 @@ export function useOffer(slugOrId: string) {
   return useQuery<OfferDetailData | null>({
     queryKey: ["offer", slugOrId],
     queryFn: async () => {
-      // Try by slug first
-      const bySlug = await fetchByField<OfferDetailData>("offers", "slug", slugOrId);
-      if (bySlug) return hydrateOfferDetailGallery(bySlug);
-      // Fallback: try by ID
-      const byId = await fetchByField<OfferDetailData>("offers", "id", slugOrId);
-      return hydrateOfferDetailGallery(byId);
+      try {
+        const bySlug = await fetchByField<OfferDetailData>("offers", "slug", slugOrId);
+        if (bySlug) return hydrateOfferDetailGallery(bySlug);
+
+        const byId = await fetchByField<OfferDetailData>("offers", "id", slugOrId);
+        if (byId) return hydrateOfferDetailGallery(byId);
+      } catch (error) {
+        console.warn("Offer CMS fetch failed, using fallback offer.", error);
+      }
+
+      return findFallbackOffer(slugOrId) ?? null;
     },
     enabled: !!slugOrId,
     staleTime: 0,
@@ -207,17 +214,25 @@ export function useHotelsForOffer({
     queryKey: ["offer-hotels", offerId, offerSlug],
     enabled: Boolean(offerId || offerSlug),
     queryFn: async () => {
-      const response = await fetchCollection<HotelData>("hotels", {
-        limit: 100,
-        depth: 1,
-        sort: "name",
-      });
+      const fallbackHotels =
+        findFallbackOffer(offerSlug || offerId || "")?.hotels ?? [];
 
-      const relationMatches = response.docs.filter((hotel) =>
-        relationIncludesOffer(hotel, offerId, offerSlug),
-      );
+      try {
+        const response = await fetchCollection<HotelData>("hotels", {
+          limit: 100,
+          depth: 1,
+          sort: "name",
+        });
 
-      return relationMatches;
+        const relationMatches = response.docs.filter((hotel) =>
+          relationIncludesOffer(hotel, offerId, offerSlug),
+        );
+
+        return relationMatches.length > 0 ? relationMatches : fallbackHotels;
+      } catch (error) {
+        console.warn("Hotel CMS fetch failed, using fallback hotels.", error);
+        return fallbackHotels;
+      }
     },
     staleTime: 0,
     gcTime: 0,
